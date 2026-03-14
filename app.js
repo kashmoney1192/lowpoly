@@ -549,13 +549,42 @@
     const w = outputCanvas.width;
     const h = outputCanvas.height;
     const transparent = transparentBgCheckbox.checked;
-    let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">`;
-    if (!transparent) svg += `<rect width="${w}" height="${h}" fill="#000"/>`;
+
+    // Build optimized SVG for Bambu Studio compatibility:
+    // - Integer coordinates (smaller file, faster parsing)
+    // - Hex colors (shorter than rgb(), universal compatibility)
+    // - No strokes (fewer attributes, cleaner geometry)
+    // - Minimal attributes per element
+    const parts = [];
+    parts.push(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}">`);
+    if (!transparent) parts.push(`<rect width="${w}" height="${h}" fill="#000"/>`);
+
+    // Group triangles by color to use <g fill="..."> groups (much smaller file)
+    const colorGroups = new Map();
     for (const tri of lastTriangles) {
-      const pts = tri.points.map((p) => `${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
-      svg += `<polygon points="${pts}" fill="${tri.color}" stroke="${tri.stroke || tri.color}" stroke-width="${tri.strokeWidth || 0.5}" stroke-linejoin="round"/>`;
+      const hex = colorToHex(tri.color);
+      if (!colorGroups.has(hex)) colorGroups.set(hex, []);
+      colorGroups.get(hex).push(tri.points);
     }
-    svg += "</svg>";
+
+    for (const [hex, polys] of colorGroups) {
+      if (polys.length === 1) {
+        // Single polygon, inline
+        const pts = polys[0].map((p) => `${Math.round(p[0])},${Math.round(p[1])}`).join(" ");
+        parts.push(`<polygon points="${pts}" fill="${hex}"/>`);
+      } else {
+        // Group polygons sharing the same color
+        parts.push(`<g fill="${hex}">`);
+        for (const poly of polys) {
+          const pts = poly.map((p) => `${Math.round(p[0])},${Math.round(p[1])}`).join(" ");
+          parts.push(`<polygon points="${pts}"/>`);
+        }
+        parts.push("</g>");
+      }
+    }
+
+    parts.push("</svg>");
+    const svg = parts.join("\n");
     const blob = new Blob([svg], { type: "image/svg+xml" });
     const link = document.createElement("a");
     link.download = "low-poly.svg";
@@ -563,6 +592,16 @@
     link.click();
     URL.revokeObjectURL(link.href);
   });
+
+  function colorToHex(color) {
+    // Convert rgb(r,g,b) or rgba(r,g,b,a) to #RRGGBB
+    const m = color.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (!m) return color; // already hex or other format
+    const r = parseInt(m[1]);
+    const g = parseInt(m[2]);
+    const b = parseInt(m[3]);
+    return "#" + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+  }
 
   // ============================================================
   // Image Processing
