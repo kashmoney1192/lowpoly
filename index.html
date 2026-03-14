@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Low Poly Art Generator</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Low Poly Art Generator</h1>
+      <p class="subtitle">Transform any image into stunning low-poly artwork</p>
+    </header>
+
+    <div class="controls">
+      <div class="upload-area" id="uploadArea">
+        <input type="file" id="fileInput" accept="image/*" hidden>
+        <div class="upload-prompt">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span>Drop an image here or click to upload</span>
+        </div>
+      </div>
+
+      <div class="sliders">
+        <div class="slider-group">
+          <label for="pointCount">Triangle Count</label>
+          <input type="range" id="pointCount" min="50" max="20000" value="3000" step="50">
+          <span class="slider-value" id="pointCountValue">3000</span>
+        </div>
+        <div class="slider-group">
+          <label for="edgeThreshold">Edge Sensitivity</label>
+          <input type="range" id="edgeThreshold" min="5" max="200" value="40" step="5">
+          <span class="slider-value" id="edgeThresholdValue">40</span>
+        </div>
+        <div class="slider-group">
+          <label for="edgeBias">Edge Bias</label>
+          <input type="range" id="edgeBias" min="0" max="100" value="70" step="5">
+          <span class="slider-value" id="edgeBiasValue">70%</span>
+        </div>
+        <div class="slider-group">
+          <label for="blur">Smoothing</label>
+          <input type="range" id="blur" min="0" max="5" value="1" step="1">
+          <span class="slider-value" id="blurValue">1</span>
+        </div>
+        <div class="slider-group">
+          <label for="resolution">Output Resolution</label>
+          <select id="resolution">
+            <option value="0.5">50% (Fast)</option>
+            <option value="0.75">75%</option>
+            <option value="1" selected>100% (Original)</option>
+            <option value="1.5">150%</option>
+            <option value="2">200% (High Res)</option>
+            <option value="3">300%</option>
+            <option value="4">400%</option>
+            <option value="5">500%</option>
+          </select>
+        </div>
+        <div class="slider-group">
+          <label for="strokeWidth">Triangle Outline</label>
+          <input type="range" id="strokeWidth" min="0" max="3" value="0" step="0.5">
+          <span class="slider-value" id="strokeWidthValue">None</span>
+        </div>
+      </div>
+
+      <div class="toggle-row">
+        <label class="toggle">
+          <input type="checkbox" id="transparentBg">
+          <span class="toggle-switch"></span>
+          <span class="toggle-label">Transparent Background</span>
+        </label>
+        <label class="toggle">
+          <input type="checkbox" id="showWireframe">
+          <span class="toggle-switch"></span>
+          <span class="toggle-label">Show Wireframe</span>
+        </label>
+      </div>
+
+      <div class="actions">
+        <button id="generateBtn" disabled>Generate</button>
+        <button id="circleModeBtn" disabled class="circle-btn">Circle Zones</button>
+        <button id="drawModeBtn" disabled class="draw-btn">Brush Paint</button>
+        <button id="clearDrawBtn" disabled class="secondary-btn">Clear All</button>
+        <button id="downloadBtn" disabled>Download PNG</button>
+        <button id="downloadSvgBtn" disabled>Download SVG</button>
+      </div>
+    </div>
+
+    <!-- Draw toolbar (brush mode) -->
+    <div class="draw-toolbar" id="drawToolbar" hidden>
+      <div class="draw-info">Paint areas for more triangles. Then click Generate.</div>
+      <div class="slider-group inline">
+        <label for="brushSize">Brush</label>
+        <input type="range" id="brushSize" min="5" max="100" value="30" step="5">
+        <span class="slider-value" id="brushSizeValue">30</span>
+      </div>
+      <div class="slider-group inline">
+        <label for="brushStrength">Strength</label>
+        <input type="range" id="brushStrength" min="1" max="10" value="5" step="1">
+        <span class="slider-value" id="brushStrengthValue">5x</span>
+      </div>
+      <button id="doneDrawBtn">Done</button>
+    </div>
+
+    <!-- Circle toolbar -->
+    <div class="circle-toolbar" id="circleToolbar" hidden>
+      <div class="draw-info">Click &amp; drag on image to place a circle zone.</div>
+      <div class="slider-group inline">
+        <label for="circleDensity">Detail</label>
+        <input type="range" id="circleDensity" min="1" max="20" value="8" step="1">
+        <span class="slider-value" id="circleDensityValue">8x</span>
+      </div>
+      <div class="slider-group inline">
+        <label for="circleAccuracy">Accuracy</label>
+        <input type="range" id="circleAccuracy" min="1" max="5" value="3" step="1">
+        <span class="slider-value" id="circleAccuracyValue">3x</span>
+      </div>
+      <button id="undoCircleBtn" class="secondary-btn">Undo Last</button>
+      <button id="doneCircleBtn">Done</button>
+    </div>
+
+    <!-- Circle zones list -->
+    <div class="circle-list" id="circleList" hidden></div>
+
+    <div class="canvas-container" id="canvasContainer">
+      <canvas id="sourceCanvas" hidden></canvas>
+      <canvas id="drawCanvas" hidden></canvas>
+      <canvas id="outputCanvas"></canvas>
+      <canvas id="previewCanvas" hidden></canvas>
+      <div class="placeholder" id="placeholder">
+        <svg width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3">
+          <polygon points="12 2 22 20 2 20"/>
+        </svg>
+        <p>Your low-poly artwork will appear here</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
