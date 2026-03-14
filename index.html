@@ -88,6 +88,28 @@
         <button id="downloadBtn" disabled>Download PNG</button>
         <button id="downloadSvgBtn" disabled>Download SVG</button>
         <button id="downloadStlBtn" disabled>Download STL</button>
+        <button id="downloadAmsBtn" disabled class="ams-btn">AMS Export</button>
+      </div>
+      <div class="ams-options" id="amsOptions" hidden>
+        <div class="slider-group inline">
+          <label for="amsSlots">AMS Slots</label>
+          <select id="amsSlots">
+            <option value="2">2 Colors</option>
+            <option value="4" selected>4 Colors</option>
+            <option value="8">8 Colors</option>
+            <option value="16">16 Colors</option>
+          </select>
+        </div>
+        <div class="slider-group inline">
+          <label for="amsDepth">Model Height</label>
+          <select id="amsDepth">
+            <option value="flat">Flat (2mm)</option>
+            <option value="relief" selected>Relief (1-4mm)</option>
+            <option value="thick">Thick Relief (2-8mm)</option>
+          </select>
+        </div>
+        <button id="amsDownloadBtn">Download ZIP</button>
+        <div class="ams-palette" id="amsPalette"></div>
       </div>
     </div>
 

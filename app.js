@@ -16,6 +16,12 @@
   const downloadBtn = document.getElementById("downloadBtn");
   const downloadSvgBtn = document.getElementById("downloadSvgBtn");
   const downloadStlBtn = document.getElementById("downloadStlBtn");
+  const downloadAmsBtn = document.getElementById("downloadAmsBtn");
+  const amsOptions = document.getElementById("amsOptions");
+  const amsSlotsSelect = document.getElementById("amsSlots");
+  const amsDepthSelect = document.getElementById("amsDepth");
+  const amsDownloadBtn = document.getElementById("amsDownloadBtn");
+  const amsPalette = document.getElementById("amsPalette");
 
   // Brush mode
   const drawModeBtn = document.getElementById("drawModeBtn");
@@ -520,6 +526,7 @@
       downloadBtn.disabled = false;
       downloadSvgBtn.disabled = false;
       downloadStlBtn.disabled = false;
+      downloadAmsBtn.disabled = false;
     } catch (err) {
       console.error("Generation failed:", err);
     } finally {
@@ -697,6 +704,290 @@
     link.click();
     URL.revokeObjectURL(link.href);
   });
+
+  // ============================================================
+  // AMS Export — multi-color STLs in a ZIP
+  // ============================================================
+
+  downloadAmsBtn.addEventListener("click", () => {
+    if (!lastTriangles) return;
+    amsOptions.hidden = !amsOptions.hidden;
+    if (!amsOptions.hidden) {
+      updateAmsPalette();
+    }
+  });
+
+  amsSlotsSelect.addEventListener("change", updateAmsPalette);
+
+  function parseTriColor(tri) {
+    const m = tri.color.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+    if (!m) return [128, 128, 128];
+    return [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])];
+  }
+
+  function quantizeColors(triangles, numColors) {
+    // Median-cut color quantization
+    const colors = triangles.map(parseTriColor);
+
+    function medianCut(indices, depth) {
+      if (depth === 0 || indices.length === 0) {
+        // Average all colors in this bucket
+        let r = 0, g = 0, b = 0;
+        for (const i of indices) {
+          r += colors[i][0]; g += colors[i][1]; b += colors[i][2];
+        }
+        const n = indices.length || 1;
+        const avg = [Math.round(r / n), Math.round(g / n), Math.round(b / n)];
+        return [{ color: avg, indices }];
+      }
+
+      // Find channel with widest range
+      let minR = 255, maxR = 0, minG = 255, maxG = 0, minB = 255, maxB = 0;
+      for (const i of indices) {
+        const [r, g, b] = colors[i];
+        if (r < minR) minR = r; if (r > maxR) maxR = r;
+        if (g < minG) minG = g; if (g > maxG) maxG = g;
+        if (b < minB) minB = b; if (b > maxB) maxB = b;
+      }
+
+      const rangeR = maxR - minR, rangeG = maxG - minG, rangeB = maxB - minB;
+      let ch = 0;
+      if (rangeG >= rangeR && rangeG >= rangeB) ch = 1;
+      else if (rangeB >= rangeR && rangeB >= rangeG) ch = 2;
+
+      // Sort by that channel and split at median
+      indices.sort((a, b) => colors[a][ch] - colors[b][ch]);
+      const mid = Math.floor(indices.length / 2);
+      const left = indices.slice(0, mid);
+      const right = indices.slice(mid);
+
+      return [
+        ...medianCut(left, depth - 1),
+        ...medianCut(right, depth - 1),
+      ];
+    }
+
+    const allIndices = Array.from({ length: triangles.length }, (_, i) => i);
+    const depth = Math.ceil(Math.log2(numColors));
+    let buckets = medianCut(allIndices, depth);
+
+    // Merge smallest buckets if we have too many
+    while (buckets.length > numColors) {
+      buckets.sort((a, b) => a.indices.length - b.indices.length);
+      const smallest = buckets.shift();
+      // Merge into nearest color bucket
+      let bestDist = Infinity, bestIdx = 0;
+      for (let i = 0; i < buckets.length; i++) {
+        const dr = smallest.color[0] - buckets[i].color[0];
+        const dg = smallest.color[1] - buckets[i].color[1];
+        const db = smallest.color[2] - buckets[i].color[2];
+        const dist = dr * dr + dg * dg + db * db;
+        if (dist < bestDist) { bestDist = dist; bestIdx = i; }
+      }
+      buckets[bestIdx].indices.push(...smallest.indices);
+    }
+
+    return buckets;
+  }
+
+  function updateAmsPalette() {
+    if (!lastTriangles) return;
+    const numSlots = parseInt(amsSlotsSelect.value);
+    const buckets = quantizeColors(lastTriangles, numSlots);
+
+    amsPalette.innerHTML = "";
+    buckets.forEach((b, i) => {
+      const hex = `#${((1 << 24) | (b.color[0] << 16) | (b.color[1] << 8) | b.color[2]).toString(16).slice(1)}`;
+      const div = document.createElement("div");
+      div.className = "ams-swatch";
+      div.innerHTML = `<div class="ams-swatch-color" style="background:${hex}"></div>Slot ${i + 1} (${b.indices.length})`;
+      amsPalette.appendChild(div);
+    });
+  }
+
+  amsDownloadBtn.addEventListener("click", async () => {
+    if (!lastTriangles) return;
+    const h = outputCanvas.height;
+    const numSlots = parseInt(amsSlotsSelect.value);
+    const depthMode = amsDepthSelect.value;
+    const scale = 0.1;
+
+    let baseH, maxH;
+    if (depthMode === "flat") { baseH = 2.0; maxH = 0; }
+    else if (depthMode === "thick") { baseH = 2.0; maxH = 6.0; }
+    else { baseH = 1.0; maxH = 3.0; } // relief
+
+    const buckets = quantizeColors(lastTriangles, numSlots);
+
+    // Generate one STL per color bucket
+    const files = [];
+
+    for (let bi = 0; bi < buckets.length; bi++) {
+      const bucket = buckets[bi];
+      const hex = `${((1 << 24) | (bucket.color[0] << 16) | (bucket.color[1] << 8) | bucket.color[2]).toString(16).slice(1)}`;
+
+      const tris = bucket.indices;
+      const triCount = tris.length * 8;
+      const bufSize = 84 + triCount * 50;
+      const buf = new ArrayBuffer(bufSize);
+      const dv = new DataView(buf);
+
+      const hdr = `Slot ${bi + 1} - #${hex} - ${tris.length} triangles`;
+      for (let i = 0; i < 80; i++) dv.setUint8(i, i < hdr.length ? hdr.charCodeAt(i) : 0);
+      dv.setUint32(80, triCount, true);
+
+      let off = 84;
+
+      function writeFacet(ax, ay, az, bx, by, bz, cx, cy, cz) {
+        const ux = bx - ax, uy = by - ay, uz = bz - az;
+        const vx = cx - ax, vy = cy - ay, vz = cz - az;
+        let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+        nx /= len; ny /= len; nz /= len;
+        dv.setFloat32(off, nx, true); off += 4;
+        dv.setFloat32(off, ny, true); off += 4;
+        dv.setFloat32(off, nz, true); off += 4;
+        dv.setFloat32(off, ax, true); off += 4;
+        dv.setFloat32(off, ay, true); off += 4;
+        dv.setFloat32(off, az, true); off += 4;
+        dv.setFloat32(off, bx, true); off += 4;
+        dv.setFloat32(off, by, true); off += 4;
+        dv.setFloat32(off, bz, true); off += 4;
+        dv.setFloat32(off, cx, true); off += 4;
+        dv.setFloat32(off, cy, true); off += 4;
+        dv.setFloat32(off, cz, true); off += 4;
+        dv.setUint16(off, 0, true); off += 2;
+      }
+
+      for (const ti of tris) {
+        const tri = lastTriangles[ti];
+        const p = tri.points;
+        const col = parseTriColor(tri);
+        const brightness = 0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2];
+        const extH = baseH + maxH * (1 - brightness / 255);
+
+        const x0 = p[0][0] * scale, y0 = (h - p[0][1]) * scale;
+        const x1 = p[1][0] * scale, y1 = (h - p[1][1]) * scale;
+        const x2 = p[2][0] * scale, y2 = (h - p[2][1]) * scale;
+
+        writeFacet(x0, y0, extH, x1, y1, extH, x2, y2, extH);
+        writeFacet(x0, y0, 0, x2, y2, 0, x1, y1, 0);
+        const verts = [[x0, y0], [x1, y1], [x2, y2]];
+        for (let i = 0; i < 3; i++) {
+          const [ax, ay] = verts[i];
+          const [bx, by] = verts[(i + 1) % 3];
+          writeFacet(ax, ay, 0, bx, by, 0, bx, by, extH);
+          writeFacet(ax, ay, 0, bx, by, extH, ax, ay, extH);
+        }
+      }
+
+      files.push({
+        name: `slot${bi + 1}_${hex}.stl`,
+        data: new Uint8Array(buf),
+      });
+    }
+
+    // Build ZIP file (store mode, no compression)
+    const zipBlob = buildZip(files);
+    const link = document.createElement("a");
+    link.download = "low-poly-ams.zip";
+    link.href = URL.createObjectURL(zipBlob);
+    link.click();
+    URL.revokeObjectURL(link.href);
+  });
+
+  // Minimal ZIP builder (store mode, no compression)
+  function buildZip(files) {
+    const entries = [];
+    let centralOffset = 0;
+
+    // Local file entries
+    for (const f of files) {
+      const nameBytes = new TextEncoder().encode(f.name);
+      // Local file header: 30 bytes + name + data
+      const localHeader = new ArrayBuffer(30 + nameBytes.length);
+      const lv = new DataView(localHeader);
+      lv.setUint32(0, 0x04034b50, true); // signature
+      lv.setUint16(4, 20, true);         // version needed
+      lv.setUint16(6, 0, true);          // flags
+      lv.setUint16(8, 0, true);          // compression: store
+      lv.setUint16(10, 0, true);         // mod time
+      lv.setUint16(12, 0, true);         // mod date
+      lv.setUint32(14, crc32(f.data), true);
+      lv.setUint32(18, f.data.length, true); // compressed size
+      lv.setUint32(22, f.data.length, true); // uncompressed size
+      lv.setUint16(26, nameBytes.length, true);
+      lv.setUint16(28, 0, true);         // extra field length
+      new Uint8Array(localHeader).set(nameBytes, 30);
+
+      entries.push({ name: nameBytes, data: f.data, localHeader: new Uint8Array(localHeader), offset: centralOffset });
+      centralOffset += localHeader.byteLength + f.data.length;
+    }
+
+    // Central directory
+    const centralParts = [];
+    for (const e of entries) {
+      const cdHeader = new ArrayBuffer(46 + e.name.length);
+      const cv = new DataView(cdHeader);
+      cv.setUint32(0, 0x02014b50, true);
+      cv.setUint16(4, 20, true);
+      cv.setUint16(6, 20, true);
+      cv.setUint16(8, 0, true);
+      cv.setUint16(10, 0, true);
+      cv.setUint16(12, 0, true);
+      cv.setUint16(14, 0, true);
+      cv.setUint32(16, crc32(e.data), true);
+      cv.setUint32(20, e.data.length, true);
+      cv.setUint32(24, e.data.length, true);
+      cv.setUint16(28, e.name.length, true);
+      cv.setUint16(30, 0, true);
+      cv.setUint16(32, 0, true);
+      cv.setUint16(34, 0, true);
+      cv.setUint16(36, 0, true);
+      cv.setUint32(38, 0, true);
+      cv.setUint32(42, e.offset, true);
+      new Uint8Array(cdHeader).set(e.name, 46);
+      centralParts.push(new Uint8Array(cdHeader));
+    }
+
+    let centralSize = 0;
+    for (const cp of centralParts) centralSize += cp.length;
+
+    // End of central directory
+    const eocd = new ArrayBuffer(22);
+    const ev = new DataView(eocd);
+    ev.setUint32(0, 0x06054b50, true);
+    ev.setUint16(4, 0, true);
+    ev.setUint16(6, 0, true);
+    ev.setUint16(8, entries.length, true);
+    ev.setUint16(10, entries.length, true);
+    ev.setUint32(12, centralSize, true);
+    ev.setUint32(16, centralOffset, true);
+    ev.setUint16(20, 0, true);
+
+    // Combine all parts
+    const parts = [];
+    for (const e of entries) {
+      parts.push(e.localHeader);
+      parts.push(e.data);
+    }
+    for (const cp of centralParts) parts.push(cp);
+    parts.push(new Uint8Array(eocd));
+
+    return new Blob(parts, { type: "application/zip" });
+  }
+
+  // CRC-32 implementation
+  function crc32(data) {
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < data.length; i++) {
+      crc ^= data[i];
+      for (let j = 0; j < 8; j++) {
+        crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
+      }
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
 
   // ============================================================
   // Image Processing
