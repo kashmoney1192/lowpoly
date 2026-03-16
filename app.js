@@ -820,78 +820,80 @@
 
     const buckets = quantizeColors(lastTriangles, numSlots);
 
-    // Build a single 3MF file with per-triangle colors embedded
-    // 3MF = ZIP containing XML files that Bambu Studio reads natively
-
-    // Collect all vertices and triangles for the combined mesh
-    const allVertices = []; // [x, y, z]
-    const allTriangles = []; // { v1, v2, v3, colorIdx }
-    let vertexOffset = 0;
-
-    // Map each low-poly triangle to a color bucket index
-    const triToColor = new Int32Array(lastTriangles.length);
-    for (let bi = 0; bi < buckets.length; bi++) {
-      for (const ti of buckets[bi].indices) {
-        triToColor[ti] = bi;
-      }
-    }
-
-    for (let ti = 0; ti < lastTriangles.length; ti++) {
-      const tri = lastTriangles[ti];
-      const p = tri.points;
-      const col = parseTriColor(tri);
-      const brightness = 0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2];
-      const extH = baseH + maxH * (1 - brightness / 255);
-      const colorIdx = triToColor[ti];
-
-      const x0 = p[0][0] * scale, y0 = (h - p[0][1]) * scale;
-      const x1 = p[1][0] * scale, y1 = (h - p[1][1]) * scale;
-      const x2 = p[2][0] * scale, y2 = (h - p[2][1]) * scale;
-
-      const base = vertexOffset;
-      // Top face vertices (at extrusion height)
-      allVertices.push([x0, y0, extH], [x1, y1, extH], [x2, y2, extH]);
-      // Bottom face vertices (at z=0)
-      allVertices.push([x0, y0, 0], [x1, y1, 0], [x2, y2, 0]);
-
-      // Top face
-      allTriangles.push({ v1: base, v2: base + 1, v3: base + 2, pid: colorIdx });
-      // Bottom face (reversed winding)
-      allTriangles.push({ v1: base + 3, v2: base + 5, v3: base + 4, pid: colorIdx });
-
-      // 3 side quads (2 triangles each)
-      const topIdx = [base, base + 1, base + 2];
-      const botIdx = [base + 3, base + 4, base + 5];
-      for (let i = 0; i < 3; i++) {
-        const j = (i + 1) % 3;
-        allTriangles.push({ v1: botIdx[i], v2: botIdx[j], v3: topIdx[j], pid: colorIdx });
-        allTriangles.push({ v1: botIdx[i], v2: topIdx[j], v3: topIdx[i], pid: colorIdx });
-      }
-
-      vertexOffset += 6;
-    }
-
-    // Build 3MF XML with per-triangle color assignments
-    // displaycolor must include alpha channel (FF) for Bambu Studio
+    // Build 3MF with one <object> per color slot.
+    // Bambu Studio treats each object as a separate part with its own color.
     const colorHexList = buckets.map(b =>
       `#${((1 << 24) | (b.color[0] << 16) | (b.color[1] << 8) | b.color[2]).toString(16).slice(1).toUpperCase()}FF`
     );
 
-    let baseMaterials = "";
+    // basematerials: one <base> per color
+    let baseMaterialsXml = "";
     for (let i = 0; i < colorHexList.length; i++) {
-      baseMaterials += `      <base name="Color ${i + 1}" displaycolor="${colorHexList[i]}" />\n`;
+      baseMaterialsXml += `      <base name="Color ${i + 1}" displaycolor="${colorHexList[i]}" />\n`;
     }
 
-    // Build vertices XML using array for performance
-    const verticesParts = [];
-    for (const v of allVertices) {
-      verticesParts.push(`        <vertex x="${v[0].toFixed(4)}" y="${v[1].toFixed(4)}" z="${v[2].toFixed(4)}" />`);
-    }
+    // Build one <object> per color bucket
+    let objectsXml = "";
+    let buildItems = "";
 
-    // Build triangles XML — every triangle gets pid="1" and p1 for its color index
-    const trianglesParts = [];
-    for (const t of allTriangles) {
-      trianglesParts.push(`        <triangle v1="${t.v1}" v2="${t.v2}" v3="${t.v3}" pid="1" p1="${t.pid}" />`);
+    for (let bi = 0; bi < buckets.length; bi++) {
+      const bucket = buckets[bi];
+      const objectId = bi + 2; // id=1 is basematerials
+
+      const vertices = [];
+      const triangles = [];
+      let vOff = 0;
+
+      for (const ti of bucket.indices) {
+        const tri = lastTriangles[ti];
+        const p = tri.points;
+        const col = parseTriColor(tri);
+        const brightness = 0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2];
+        const extH = baseH + maxH * (1 - brightness / 255);
+
+        const x0 = p[0][0] * scale, y0 = (h - p[0][1]) * scale;
+        const x1 = p[1][0] * scale, y1 = (h - p[1][1]) * scale;
+        const x2 = p[2][0] * scale, y2 = (h - p[2][1]) * scale;
+
+        const base = vOff;
+        // 6 vertices: 3 top + 3 bottom
+        vertices.push([x0, y0, extH], [x1, y1, extH], [x2, y2, extH]);
+        vertices.push([x0, y0, 0], [x1, y1, 0], [x2, y2, 0]);
+
+        // Top face
+        triangles.push([base, base + 1, base + 2]);
+        // Bottom face (reversed winding)
+        triangles.push([base + 3, base + 5, base + 4]);
+        // 3 side quads
+        const topI = [base, base + 1, base + 2];
+        const botI = [base + 3, base + 4, base + 5];
+        for (let i = 0; i < 3; i++) {
+          const j = (i + 1) % 3;
+          triangles.push([botI[i], botI[j], topI[j]]);
+          triangles.push([botI[i], topI[j], topI[i]]);
+        }
+        vOff += 6;
+      }
+
+      let vertsStr = "";
+      for (const v of vertices) {
+        vertsStr += `          <vertex x="${v[0].toFixed(4)}" y="${v[1].toFixed(4)}" z="${v[2].toFixed(4)}" />\n`;
+      }
+      let trisStr = "";
+      for (const t of triangles) {
+        trisStr += `          <triangle v1="${t[0]}" v2="${t[1]}" v3="${t[2]}" />\n`;
+      }
+
+      objectsXml += `    <object id="${objectId}" type="model" pid="1" pindex="${bi}">
+      <mesh>
+        <vertices>
+${vertsStr}        </vertices>
+        <triangles>
+${trisStr}        </triangles>
+      </mesh>
+    </object>\n`;
+
+      buildItems += `    <item objectid="${objectId}" />\n`;
     }
 
     const modelXml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -900,21 +902,10 @@
   <metadata name="Application">Low Poly Art Generator</metadata>
   <resources>
     <basematerials id="1">
-${baseMaterials}    </basematerials>
-    <object id="2" type="model" pid="1" pindex="0">
-      <mesh>
-        <vertices>
-${verticesParts.join("\n")}
-        </vertices>
-        <triangles>
-${trianglesParts.join("\n")}
-        </triangles>
-      </mesh>
-    </object>
-  </resources>
+${baseMaterialsXml}    </basematerials>
+${objectsXml}  </resources>
   <build>
-    <item objectid="2" />
-  </build>
+${buildItems}  </build>
 </model>`;
 
     const contentTypes = `<?xml version="1.0" encoding="UTF-8"?>
