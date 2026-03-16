@@ -121,6 +121,7 @@
         drawModeBtn.disabled = false;
         circleModeBtn.disabled = false;
         clearDrawBtn.disabled = false;
+        saveProjectBtn.disabled = false;
 
         densityW = img.width;
         densityH = img.height;
@@ -819,82 +820,261 @@
 
     const buckets = quantizeColors(lastTriangles, numSlots);
 
-    // Generate one STL per color bucket
-    const files = [];
+    // Build a single 3MF file with per-triangle colors embedded
+    // 3MF = ZIP containing XML files that Bambu Studio reads natively
 
+    // Collect all vertices and triangles for the combined mesh
+    const allVertices = []; // [x, y, z]
+    const allTriangles = []; // { v1, v2, v3, colorIdx }
+    let vertexOffset = 0;
+
+    // Map each low-poly triangle to a color bucket index
+    const triToColor = new Int32Array(lastTriangles.length);
     for (let bi = 0; bi < buckets.length; bi++) {
-      const bucket = buckets[bi];
-      const hex = `${((1 << 24) | (bucket.color[0] << 16) | (bucket.color[1] << 8) | bucket.color[2]).toString(16).slice(1)}`;
-
-      const tris = bucket.indices;
-      const triCount = tris.length * 8;
-      const bufSize = 84 + triCount * 50;
-      const buf = new ArrayBuffer(bufSize);
-      const dv = new DataView(buf);
-
-      const hdr = `Slot ${bi + 1} - #${hex} - ${tris.length} triangles`;
-      for (let i = 0; i < 80; i++) dv.setUint8(i, i < hdr.length ? hdr.charCodeAt(i) : 0);
-      dv.setUint32(80, triCount, true);
-
-      let off = 84;
-
-      function writeFacet(ax, ay, az, bx, by, bz, cx, cy, cz) {
-        const ux = bx - ax, uy = by - ay, uz = bz - az;
-        const vx = cx - ax, vy = cy - ay, vz = cz - az;
-        let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-        const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-        nx /= len; ny /= len; nz /= len;
-        dv.setFloat32(off, nx, true); off += 4;
-        dv.setFloat32(off, ny, true); off += 4;
-        dv.setFloat32(off, nz, true); off += 4;
-        dv.setFloat32(off, ax, true); off += 4;
-        dv.setFloat32(off, ay, true); off += 4;
-        dv.setFloat32(off, az, true); off += 4;
-        dv.setFloat32(off, bx, true); off += 4;
-        dv.setFloat32(off, by, true); off += 4;
-        dv.setFloat32(off, bz, true); off += 4;
-        dv.setFloat32(off, cx, true); off += 4;
-        dv.setFloat32(off, cy, true); off += 4;
-        dv.setFloat32(off, cz, true); off += 4;
-        dv.setUint16(off, 0, true); off += 2;
+      for (const ti of buckets[bi].indices) {
+        triToColor[ti] = bi;
       }
-
-      for (const ti of tris) {
-        const tri = lastTriangles[ti];
-        const p = tri.points;
-        const col = parseTriColor(tri);
-        const brightness = 0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2];
-        const extH = baseH + maxH * (1 - brightness / 255);
-
-        const x0 = p[0][0] * scale, y0 = (h - p[0][1]) * scale;
-        const x1 = p[1][0] * scale, y1 = (h - p[1][1]) * scale;
-        const x2 = p[2][0] * scale, y2 = (h - p[2][1]) * scale;
-
-        writeFacet(x0, y0, extH, x1, y1, extH, x2, y2, extH);
-        writeFacet(x0, y0, 0, x2, y2, 0, x1, y1, 0);
-        const verts = [[x0, y0], [x1, y1], [x2, y2]];
-        for (let i = 0; i < 3; i++) {
-          const [ax, ay] = verts[i];
-          const [bx, by] = verts[(i + 1) % 3];
-          writeFacet(ax, ay, 0, bx, by, 0, bx, by, extH);
-          writeFacet(ax, ay, 0, bx, by, extH, ax, ay, extH);
-        }
-      }
-
-      files.push({
-        name: `slot${bi + 1}_${hex}.stl`,
-        data: new Uint8Array(buf),
-      });
     }
 
-    // Build ZIP file (store mode, no compression)
+    for (let ti = 0; ti < lastTriangles.length; ti++) {
+      const tri = lastTriangles[ti];
+      const p = tri.points;
+      const col = parseTriColor(tri);
+      const brightness = 0.299 * col[0] + 0.587 * col[1] + 0.114 * col[2];
+      const extH = baseH + maxH * (1 - brightness / 255);
+      const colorIdx = triToColor[ti];
+
+      const x0 = p[0][0] * scale, y0 = (h - p[0][1]) * scale;
+      const x1 = p[1][0] * scale, y1 = (h - p[1][1]) * scale;
+      const x2 = p[2][0] * scale, y2 = (h - p[2][1]) * scale;
+
+      const base = vertexOffset;
+      // Top face vertices (at extrusion height)
+      allVertices.push([x0, y0, extH], [x1, y1, extH], [x2, y2, extH]);
+      // Bottom face vertices (at z=0)
+      allVertices.push([x0, y0, 0], [x1, y1, 0], [x2, y2, 0]);
+
+      // Top face
+      allTriangles.push({ v1: base, v2: base + 1, v3: base + 2, pid: colorIdx });
+      // Bottom face (reversed winding)
+      allTriangles.push({ v1: base + 3, v2: base + 5, v3: base + 4, pid: colorIdx });
+
+      // 3 side quads (2 triangles each)
+      const topIdx = [base, base + 1, base + 2];
+      const botIdx = [base + 3, base + 4, base + 5];
+      for (let i = 0; i < 3; i++) {
+        const j = (i + 1) % 3;
+        allTriangles.push({ v1: botIdx[i], v2: botIdx[j], v3: topIdx[j], pid: colorIdx });
+        allTriangles.push({ v1: botIdx[i], v2: topIdx[j], v3: topIdx[i], pid: colorIdx });
+      }
+
+      vertexOffset += 6;
+    }
+
+    // Build 3MF XML
+    const colorHexList = buckets.map(b =>
+      `#${((1 << 24) | (b.color[0] << 16) | (b.color[1] << 8) | b.color[2]).toString(16).slice(1).toUpperCase()}`
+    );
+
+    let baseMaterials = "";
+    for (let i = 0; i < colorHexList.length; i++) {
+      baseMaterials += `        <base name="Color ${i + 1}" displaycolor="${colorHexList[i]}" />\n`;
+    }
+
+    let verticesXml = "";
+    for (const v of allVertices) {
+      verticesXml += `          <vertex x="${v[0].toFixed(4)}" y="${v[1].toFixed(4)}" z="${v[2].toFixed(4)}" />\n`;
+    }
+
+    let trianglesXml = "";
+    for (const t of allTriangles) {
+      trianglesXml += `          <triangle v1="${t.v1}" v2="${t.v2}" v3="${t.v3}" pid="1" p1="${t.pid}" />\n`;
+    }
+
+    const modelXml = `<?xml version="1.0" encoding="UTF-8"?>
+<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02">
+  <resources>
+    <basematerials id="1">
+${baseMaterials}    </basematerials>
+    <object id="2" type="model">
+      <mesh>
+        <vertices>
+${verticesXml}        </vertices>
+        <triangles>
+${trianglesXml}        </triangles>
+      </mesh>
+    </object>
+  </resources>
+  <build>
+    <item objectid="2" />
+  </build>
+</model>`;
+
+    const contentTypes = `<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />
+  <Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml" />
+</Types>`;
+
+    const rels = `<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel" />
+</Relationships>`;
+
+    const enc = new TextEncoder();
+    const files = [
+      { name: "[Content_Types].xml", data: enc.encode(contentTypes) },
+      { name: "_rels/.rels", data: enc.encode(rels) },
+      { name: "3D/3dmodel.model", data: enc.encode(modelXml) },
+    ];
+
     const zipBlob = buildZip(files);
     const link = document.createElement("a");
-    link.download = "low-poly-ams.zip";
+    link.download = "low-poly-ams.3mf";
     link.href = URL.createObjectURL(zipBlob);
     link.click();
     URL.revokeObjectURL(link.href);
   });
+
+  // ============================================================
+  // Save / Load Project
+  // ============================================================
+
+  const saveProjectBtn = document.getElementById("saveProjectBtn");
+  const loadProjectBtn = document.getElementById("loadProjectBtn");
+  const loadProjectInput = document.getElementById("loadProjectInput");
+
+  saveProjectBtn.addEventListener("click", () => {
+    if (!sourceImage) return;
+
+    // Get source image as data URL
+    const tempCanvas = document.createElement("canvas");
+    tempCanvas.width = sourceImage.width;
+    tempCanvas.height = sourceImage.height;
+    const tempCtx = tempCanvas.getContext("2d");
+    tempCtx.drawImage(sourceImage, 0, 0);
+    const imageDataUrl = tempCanvas.toDataURL("image/png");
+
+    // Compress density map: only store non-zero entries
+    const sparseMap = [];
+    if (densityMap) {
+      for (let i = 0; i < densityMap.length; i++) {
+        if (densityMap[i] > 0) sparseMap.push([i, densityMap[i]]);
+      }
+    }
+
+    const project = {
+      version: 1,
+      image: imageDataUrl,
+      imageWidth: sourceImage.width,
+      imageHeight: sourceImage.height,
+      settings: {
+        pointCount: pointCountSlider.value,
+        edgeThreshold: edgeThresholdSlider.value,
+        edgeBias: edgeBiasSlider.value,
+        blur: blurSlider.value,
+        resolution: resolutionSelect.value,
+        strokeWidth: strokeWidthSlider.value,
+        transparentBg: transparentBgCheckbox.checked,
+        showWireframe: showWireframeCheckbox.checked,
+        brushSize: brushSizeSlider.value,
+        brushStrength: brushStrengthSlider.value,
+        circleDensity: circleDensitySlider.value,
+        circleAccuracy: circleAccuracySlider.value,
+      },
+      circleZones: circleZones,
+      densityMap: sparseMap.length > 0 ? { w: densityW, h: densityH, data: sparseMap } : null,
+    };
+
+    const json = JSON.stringify(project);
+    const blob = new Blob([json], { type: "application/json" });
+    const link = document.createElement("a");
+    link.download = "low-poly-project.lowpoly";
+    link.href = URL.createObjectURL(blob);
+    link.click();
+    URL.revokeObjectURL(link.href);
+  });
+
+  loadProjectBtn.addEventListener("click", () => loadProjectInput.click());
+
+  loadProjectInput.addEventListener("change", () => {
+    const file = loadProjectInput.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const project = JSON.parse(e.target.result);
+        loadProject(project);
+      } catch (err) {
+        console.error("Failed to load project:", err);
+        alert("Invalid project file.");
+      }
+    };
+    reader.readAsText(file);
+    loadProjectInput.value = "";
+  });
+
+  function loadProject(project) {
+    // Load image
+    const img = new Image();
+    img.onload = () => {
+      sourceImage = img;
+      uploadArea.classList.add("has-file");
+      uploadArea.querySelector(".upload-prompt span").textContent =
+        `Loaded project (${img.width}x${img.height})`;
+
+      // Restore settings
+      const s = project.settings;
+      pointCountSlider.value = s.pointCount;
+      document.getElementById("pointCountValue").textContent = s.pointCount;
+      edgeThresholdSlider.value = s.edgeThreshold;
+      document.getElementById("edgeThresholdValue").textContent = s.edgeThreshold;
+      edgeBiasSlider.value = s.edgeBias;
+      document.getElementById("edgeBiasValue").textContent = s.edgeBias + "%";
+      blurSlider.value = s.blur;
+      document.getElementById("blurValue").textContent = s.blur;
+      resolutionSelect.value = s.resolution;
+      strokeWidthSlider.value = s.strokeWidth;
+      const sv = parseFloat(s.strokeWidth);
+      document.getElementById("strokeWidthValue").textContent = sv === 0 ? "None" : sv.toFixed(1) + "px";
+      transparentBgCheckbox.checked = s.transparentBg;
+      showWireframeCheckbox.checked = s.showWireframe;
+      brushSizeSlider.value = s.brushSize;
+      document.getElementById("brushSizeValue").textContent = s.brushSize;
+      brushStrengthSlider.value = s.brushStrength;
+      document.getElementById("brushStrengthValue").textContent = s.brushStrength + "x";
+      circleDensitySlider.value = s.circleDensity;
+      document.getElementById("circleDensityValue").textContent = s.circleDensity + "x";
+      circleAccuracySlider.value = s.circleAccuracy;
+      document.getElementById("circleAccuracyValue").textContent = s.circleAccuracy + "x";
+
+      // Restore density map
+      densityW = project.imageWidth;
+      densityH = project.imageHeight;
+      densityMap = new Float32Array(densityW * densityH);
+      if (project.densityMap && project.densityMap.data) {
+        for (const [idx, val] of project.densityMap.data) {
+          densityMap[idx] = val;
+        }
+      }
+
+      // Restore circle zones
+      circleZones = project.circleZones || [];
+      updateCircleList();
+
+      // Enable buttons
+      generateBtn.disabled = false;
+      drawModeBtn.disabled = false;
+      circleModeBtn.disabled = false;
+      clearDrawBtn.disabled = false;
+      saveProjectBtn.disabled = false;
+
+      // Auto-generate
+      lastTriangles = null;
+      generate();
+    };
+    img.src = project.image;
+  }
 
   // Minimal ZIP builder (store mode, no compression)
   function buildZip(files) {

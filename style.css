@@ -285,6 +285,15 @@ button:active:not(:disabled) {
   opacity: 0.9;
 }
 
+.save-btn {
+  background: linear-gradient(135deg, #34d399, #059669);
+  color: #0f0f13;
+}
+
+.save-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
 .ams-options {
   background: #0f1a24;
   border: 1px solid #1e3a5a;

@@ -89,6 +89,9 @@
         <button id="downloadSvgBtn" disabled>Download SVG</button>
         <button id="downloadStlBtn" disabled>Download STL</button>
         <button id="downloadAmsBtn" disabled class="ams-btn">AMS Export</button>
+        <button id="saveProjectBtn" disabled class="save-btn">Save Project</button>
+        <button id="loadProjectBtn" class="secondary-btn">Load Project</button>
+        <input type="file" id="loadProjectInput" accept=".lowpoly,.json" hidden>
       </div>
       <div class="ams-options" id="amsOptions" hidden>
         <div class="slider-group inline">
@@ -108,7 +111,7 @@
             <option value="thick">Thick Relief (2-8mm)</option>
           </select>
         </div>
-        <button id="amsDownloadBtn">Download ZIP</button>
+        <button id="amsDownloadBtn">Download 3MF</button>
         <div class="ams-palette" id="amsPalette"></div>
       </div>
     </div>
