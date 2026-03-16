@@ -549,3 +549,14 @@ button:disabled {
 .canvas-container.circle-drawing {
   cursor: crosshair;
 }
+
+footer {
+  text-align: center;
+  margin-top: 32px;
+  padding-bottom: 24px;
+}
+
+.last-updated {
+  font-size: 0.8rem;
+  color: #555;
+}
