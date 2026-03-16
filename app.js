@@ -871,37 +871,44 @@
       vertexOffset += 6;
     }
 
-    // Build 3MF XML
+    // Build 3MF XML with per-triangle color assignments
+    // displaycolor must include alpha channel (FF) for Bambu Studio
     const colorHexList = buckets.map(b =>
-      `#${((1 << 24) | (b.color[0] << 16) | (b.color[1] << 8) | b.color[2]).toString(16).slice(1).toUpperCase()}`
+      `#${((1 << 24) | (b.color[0] << 16) | (b.color[1] << 8) | b.color[2]).toString(16).slice(1).toUpperCase()}FF`
     );
 
     let baseMaterials = "";
     for (let i = 0; i < colorHexList.length; i++) {
-      baseMaterials += `        <base name="Color ${i + 1}" displaycolor="${colorHexList[i]}" />\n`;
+      baseMaterials += `      <base name="Color ${i + 1}" displaycolor="${colorHexList[i]}" />\n`;
     }
 
-    let verticesXml = "";
+    // Build vertices XML using array for performance
+    const verticesParts = [];
     for (const v of allVertices) {
-      verticesXml += `          <vertex x="${v[0].toFixed(4)}" y="${v[1].toFixed(4)}" z="${v[2].toFixed(4)}" />\n`;
+      verticesParts.push(`        <vertex x="${v[0].toFixed(4)}" y="${v[1].toFixed(4)}" z="${v[2].toFixed(4)}" />`);
     }
 
-    let trianglesXml = "";
+    // Build triangles XML — every triangle gets pid="1" and p1 for its color index
+    const trianglesParts = [];
     for (const t of allTriangles) {
-      trianglesXml += `          <triangle v1="${t.v1}" v2="${t.v2}" v3="${t.v3}" pid="1" p1="${t.pid}" />\n`;
+      trianglesParts.push(`        <triangle v1="${t.v1}" v2="${t.v2}" v3="${t.v3}" pid="1" p1="${t.pid}" />`);
     }
 
     const modelXml = `<?xml version="1.0" encoding="UTF-8"?>
-<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:m="http://schemas.microsoft.com/3dmanufacturing/material/2015/02">
+<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
+  <metadata name="Title">Low Poly Art</metadata>
+  <metadata name="Application">Low Poly Art Generator</metadata>
   <resources>
     <basematerials id="1">
 ${baseMaterials}    </basematerials>
-    <object id="2" type="model">
+    <object id="2" type="model" pid="1" pindex="0">
       <mesh>
         <vertices>
-${verticesXml}        </vertices>
+${verticesParts.join("\n")}
+        </vertices>
         <triangles>
-${trianglesXml}        </triangles>
+${trianglesParts.join("\n")}
+        </triangles>
       </mesh>
     </object>
   </resources>
