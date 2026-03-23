@@ -121,6 +121,7 @@
         drawModeBtn.disabled = false;
         circleModeBtn.disabled = false;
         clearDrawBtn.disabled = false;
+        upscaleBtn.disabled = false;
         saveProjectBtn.disabled = false;
 
         densityW = img.width;
@@ -938,9 +939,28 @@ ${buildItems}  </build>
   // Save / Load Project
   // ============================================================
 
+  const upscaleBtn = document.getElementById("upscaleBtn");
   const saveProjectBtn = document.getElementById("saveProjectBtn");
   const loadProjectBtn = document.getElementById("loadProjectBtn");
   const loadProjectInput = document.getElementById("loadProjectInput");
+
+  upscaleBtn.addEventListener("click", () => {
+    if (!sourceImage) return;
+    const scale = parseFloat(resolutionSelect.value);
+    const w = Math.round(sourceImage.width * scale);
+    const h = Math.round(sourceImage.height * scale);
+    const cvs = document.createElement("canvas");
+    cvs.width = w;
+    cvs.height = h;
+    const ctx = cvs.getContext("2d");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(sourceImage, 0, 0, w, h);
+    const link = document.createElement("a");
+    link.download = `upscaled-${Math.round(scale * 100)}pct.png`;
+    link.href = cvs.toDataURL("image/png");
+    link.click();
+  });
 
   saveProjectBtn.addEventListener("click", () => {
     if (!sourceImage) return;
@@ -1065,6 +1085,7 @@ ${buildItems}  </build>
       drawModeBtn.disabled = false;
       circleModeBtn.disabled = false;
       clearDrawBtn.disabled = false;
+      upscaleBtn.disabled = false;
       saveProjectBtn.disabled = false;
 
       // Auto-generate
